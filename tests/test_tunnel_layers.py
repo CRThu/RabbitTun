@@ -232,6 +232,108 @@ def test_mux_conn_recv_close_returns_none():
     assert conn._closed
 
 
+def test_tunnel_listen_and_target():
+    """Test --listen (client) and --target (server) via FakePhy."""
+    from tunnel.tunnel import Tunnel
+    from tunnel.__main__ import _run_tunnel_listen, _run_tunnel_target
+
+    # Two FakePhys wired together
+    phy_a, phy_b = make_pair()
+    tun_listen = Tunnel(phy_a)
+    tun_target = Tunnel(phy_b)
+    tun_listen.open()
+    tun_target.open()
+
+    # Echo server as the "internet"
+    echo_srv = socket.socket()
+    echo_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    echo_srv.bind(("127.0.0.1", 0))
+    echo_port = echo_srv.getsockname()[1]
+    echo_srv.listen(5)
+    echo_srv.settimeout(10)
+    echo_data = []
+
+    def echo_handler():
+        try:
+            while True:
+                c, _ = echo_srv.accept()
+                while True:
+                    d = c.recv(4096)
+                    if not d:
+                        break
+                    echo_data.append(d)
+                    c.sendall(d)
+                c.close()
+        except (socket.timeout, OSError):
+            pass
+
+    threading.Thread(target=echo_handler, daemon=True).start()
+
+    listen_port = 18080
+
+    # Start --listen (client side)
+    t1 = threading.Thread(target=_run_tunnel_listen, args=(tun_listen, "127.0.0.1", listen_port), daemon=True)
+    t1.start()
+
+    # Start --target (server side, forwards serial to echo server)
+    t2 = threading.Thread(target=_run_tunnel_target, args=(tun_target, f"127.0.0.1:{echo_port}"), daemon=True)
+    t2.start()
+
+    time.sleep(1)
+
+    try:
+        s = socket.create_connection(("127.0.0.1", listen_port), timeout=5)
+        s.settimeout(5)
+        s.sendall(b"tunnel_test")
+        time.sleep(1)
+        data = s.recv(4096)
+        assert data == b"tunnel_test"
+        assert b"tunnel_test" in echo_data
+        s.close()
+    finally:
+        phy_a.close()
+        phy_b.close()
+        echo_srv.close()
+
+
+def test_tunnel_target_reconnect():
+    """Test --target reconnects when target becomes available."""
+    from tunnel.tunnel import Tunnel
+    from tunnel.__main__ import _run_tunnel_target
+
+    phy_a, phy_b = make_pair()
+    tun = Tunnel(phy_a)
+    tun_b = Tunnel(phy_b)
+    tun.open()
+    tun_b.open()
+
+    target_port = 18090
+
+    # Start --target before target exists (will retry)
+    t = threading.Thread(target=_run_tunnel_target, args=(tun, f"127.0.0.1:{target_port}"), daemon=True)
+    t.start()
+    time.sleep(1)
+
+    # Now start the target
+    target_srv = socket.socket()
+    target_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    target_srv.bind(("127.0.0.1", target_port))
+    target_srv.listen(1)
+    target_srv.settimeout(5)
+
+    try:
+        c, _ = target_srv.accept()
+        c.settimeout(3)
+        c.sendall(b"reconnect_ok")
+        time.sleep(0.5)
+        data = tun_b.recv(timeout=3)
+        assert data == b"reconnect_ok"
+        c.close()
+    finally:
+        phy_a.close()
+        target_srv.close()
+
+
 # ── Layer 8: Full proxy → relay → echo server ──
 
 def test_proxy_relay_e2e():
