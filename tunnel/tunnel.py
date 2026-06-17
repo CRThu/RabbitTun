@@ -1,9 +1,9 @@
-from .phy.base import PhysicalLayer
-from .frame.protocol import encode, Decoder
+from .phy import Phy
+from .frame import encode, Decoder
 
 
 class Tunnel:
-    def __init__(self, phy: PhysicalLayer):
+    def __init__(self, phy: Phy):
         self._phy = phy
         self._decoder = Decoder()
         self._pending: list[bytes] = []

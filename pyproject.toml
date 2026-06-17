@@ -1,11 +1,14 @@
 [project]
 name = "rabbit-tun"
 version = "0.1.0"
-description = "Serial tunnel with SOCKS5 proxy support"
+description = "Serial TCP tunnel"
 requires-python = ">=3.10"
 dependencies = [
     "pyserial",
 ]
+
+[project.scripts]
+rabbit-tun = "tunnel.cli:main"
 
 [dependency-groups]
 dev = [
