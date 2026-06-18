@@ -2,7 +2,7 @@ import struct
 
 HEAD = 0x7E
 TAIL = 0x7F
-MAX_PAYLOAD = 4096
+MAX_PAYLOAD = 4088
 
 # frame types
 TYPE_DATA = 0x00
