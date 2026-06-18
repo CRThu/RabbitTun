@@ -63,13 +63,18 @@ def run_listen(tun: Tunnel, port: int) -> None:
     srv.listen(5)
     srv.settimeout(1.0)
     logger.info('listen :%d', port)
+    session_lock = threading.Lock()
 
     try:
         while True:
             try:
                 conn, addr = srv.accept()
+                if not session_lock.acquire(blocking=False):
+                    logger.info('reject %s (busy)', addr)
+                    conn.close()
+                    continue
                 logger.info('peer %s', addr)
-                threading.Thread(target=pipe, args=(tun, conn), daemon=True).start()
+                threading.Thread(target=_session_pipe, args=(tun, conn, session_lock), daemon=True).start()
             except socket.timeout:
                 continue
     except KeyboardInterrupt:
@@ -78,15 +83,24 @@ def run_listen(tun: Tunnel, port: int) -> None:
         srv.close()
 
 
+def _session_pipe(tun: Tunnel, conn: socket.socket, lock: threading.Lock) -> None:
+    try:
+        pipe(tun, conn)
+    finally:
+        lock.release()
+
+
 def run_target(tun: Tunnel, target: str) -> None:
     host, port = target.rsplit(':', 1)
     logger.info('target %s:%s', host, port)
     while True:
         try:
             conn = socket.create_connection((host, int(port)), timeout=5)
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             logger.info('connected')
             pipe(tun, conn)
-            logger.info('disconnected')
+            logger.info('disconnected, retrying in 1s')
+            time.sleep(1)
         except (ConnectionRefusedError, OSError) as e:
             logger.warning('unreachable: %s', e)
             time.sleep(2)

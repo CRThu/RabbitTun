@@ -1,8 +1,10 @@
 from .phy import Phy
-from .frame import encode, Decoder
+from .frame import encode, Decoder, MAX_PAYLOAD
 
 
 class Tunnel:
+    __slots__ = ('_phy', '_decoder', '_pending')
+
     def __init__(self, phy: Phy):
         self._phy = phy
         self._decoder = Decoder()
@@ -15,12 +17,16 @@ class Tunnel:
         self._phy.close()
 
     def send(self, data: bytes) -> None:
-        self._phy.send(encode(data))
+        enc = encode
+        phy_send = self._phy.send
+        for i in range(0, len(data), MAX_PAYLOAD):
+            phy_send(enc(data[i:i + MAX_PAYLOAD]))
 
     def recv(self, timeout: float | None = None) -> bytes | None:
-        while not self._pending:
+        pending = self._pending
+        while not pending:
             raw = self._phy.recv(timeout)
             if not raw:
                 return None
-            self._pending = self._decoder.feed(raw)
-        return self._pending.pop(0)
+            pending.extend(self._decoder.feed(raw))
+        return pending.pop(0)

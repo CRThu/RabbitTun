@@ -22,26 +22,30 @@ class SerialPhy(Phy):
         self._port = port
         self._baudrate = baudrate
         self._ser = None
-        self._lock = threading.Lock()
+        self._wlock = threading.Lock()
+        self._rlock = threading.Lock()
 
     def open(self) -> None:
         import serial
-        self._ser = serial.Serial(port=self._port, baudrate=self._baudrate, timeout=0.1)
+        self._ser = serial.Serial(port=self._port, baudrate=self._baudrate, timeout=0.01)
 
     def close(self) -> None:
-        with self._lock:
-            if self._ser and self._ser.is_open:
-                self._ser.close()
-            self._ser = None
+        with self._wlock:
+            with self._rlock:
+                if self._ser and self._ser.is_open:
+                    self._ser.close()
+                self._ser = None
 
     def send(self, data: bytes) -> None:
-        with self._lock:
-            if self._ser:
+        with self._wlock:
+            if self._ser and self._ser.is_open:
                 self._ser.write(data)
 
     def recv(self, timeout: float | None = None) -> bytes:
-        with self._lock:
-            return self._ser.read(4096) if self._ser else b''
+        with self._rlock:
+            if not self._ser or not self._ser.is_open:
+                return b''
+            return self._ser.read(4096)
 
     @property
     def name(self) -> str:
