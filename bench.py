@@ -253,67 +253,27 @@ def test_loop():
 def test_tunnel():
     from tunnel.phy import SerialPhy
     from tunnel.tunnel import Tunnel
-    from tunnel.cli import pipe
+    from tunnel.cli import run_listen, run_target
 
     echo_port = find_free_port()
     tunnel_listen = find_free_port()
 
     # echo server
     threading.Thread(target=echo_server, args=(echo_port,), daemon=True).start()
+    time.sleep(0.5)
 
-    # COM3 -> echo (target) with session lock
+    # COM3 -> echo
     phy3 = SerialPhy('COM3')
     tun3 = Tunnel(phy3)
     tun3.open()
+    threading.Thread(target=run_target, args=(tun3, f'127.0.0.1:{echo_port}'), daemon=True).start()
 
-    com3_lock = threading.Lock()
-
-    def com3_loop():
-        while True:
-            if not com3_lock.acquire(blocking=True):
-                time.sleep(0.1)
-                continue
-            try:
-                conn = socket.create_connection(('127.0.0.1', echo_port), timeout=5)
-                conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                pipe(tun3, conn)
-            except (ConnectionRefusedError, OSError):
-                time.sleep(2)
-            finally:
-                com3_lock.release()
-
-    threading.Thread(target=com3_loop, daemon=True).start()
-
-    # COM18 listen with session lock
+    # COM18 listen
     phy18 = SerialPhy('COM18')
     tun18 = Tunnel(phy18)
     tun18.open()
+    threading.Thread(target=run_listen, args=(tun18, tunnel_listen), daemon=True).start()
 
-    listen_lock = threading.Lock()
-
-    def com18_listen():
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(('127.0.0.1', tunnel_listen))
-        srv.listen(5)
-        srv.settimeout(1.0)
-        while True:
-            try:
-                conn, _ = srv.accept()
-                if not listen_lock.acquire(blocking=False):
-                    conn.close()
-                    continue
-                threading.Thread(target=_session_pipe, args=(tun18, conn, listen_lock), daemon=True).start()
-            except socket.timeout:
-                continue
-
-    def _session_pipe(tun, conn, lock):
-        try:
-            pipe(tun, conn)
-        finally:
-            lock.release()
-
-    threading.Thread(target=com18_listen, daemon=True).start()
     time.sleep(2)
 
     print('=== Serial Tunnel (COM3 <-> COM18) ===')
@@ -344,6 +304,47 @@ def test_tunnel():
     addr4 = ('127.0.0.1', tunnel_listen)
     r = bench_loss(addr4, count=50)
     print(f"  loss:       sent={r['sent']} recv={r['received']} lost={r['lost']} rate={r['rate']:.1f}%")
+
+    # 4 concurrent sessions
+    N = 4
+    PER = 15 * 1024
+    results = [None] * N
+    barrier = threading.Barrier(N)
+
+    def worker(idx):
+        try:
+            barrier.wait()
+            s = socket.create_connection(('127.0.0.1', tunnel_listen), timeout=10)
+            pkt = bytes([idx]) * 1024
+            sent = 0
+            recv_buf = b''
+            t0 = time.perf_counter()
+            while sent < PER:
+                s.sendall(pkt)
+                sent += 1024
+            while len(recv_buf) < sent:
+                chunk = s.recv(min(65536, sent - len(recv_buf)))
+                if not chunk: break
+                recv_buf += chunk
+            elapsed = time.perf_counter() - t0
+            ok = len(recv_buf) == sent and all(b == idx for b in recv_buf)
+            results[idx] = (len(recv_buf)/elapsed/1024, ok)
+            s.close()
+        except Exception as e:
+            results[idx] = (0, str(e))
+
+    time.sleep(1)
+    print(f'\n  [{N} concurrent sessions]')
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(N)]
+    for t in threads: t.start()
+    for t in threads: t.join(timeout=30)
+    for i, r in enumerate(results):
+        if r is None:
+            print(f"    session {i}: timeout")
+        elif isinstance(r[1], str):
+            print(f"    session {i}: error: {r[1]}")
+        else:
+            print(f"    session {i}: {r[0]:.1f}KB/s integrity={'ok' if r[1] else 'FAIL'}")
 
     tun3.close()
     tun18.close()
@@ -483,7 +484,5 @@ if __name__ == '__main__':
         test_tunnel()
     elif mode == 'frame':
         test_frame()
-    elif mode == 'mux':
-        test_mux()
     else:
-        print('usage: python bench.py [loop|tunnel|frame|mux]')
+        print('usage: python bench.py [loop|tunnel|frame]')

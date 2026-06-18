@@ -41,6 +41,19 @@ def make_pair():
     return a, b
 
 
+def _read_one(tun, sid, timeout=3):
+    q = tun.register(sid)
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if q:
+                return q.popleft()
+            time.sleep(0.001)
+        return None
+    finally:
+        tun.unregister(sid)
+
+
 def test_tunnel_frame():
     from tunnel.tunnel import Tunnel
     from tunnel.frame import TYPE_DATA
@@ -49,9 +62,16 @@ def test_tunnel_frame():
     tun_a.open()
     tun_b.open()
     try:
-        tun_a.send(b"HelloFrame")
-        frame = tun_b.recv(timeout=3)
-        assert frame == (TYPE_DATA, 0, b"HelloFrame")
+        q_b = tun_b.register(0)
+        tun_a.send(0, b"HelloFrame")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if q_b:
+                assert q_b.popleft() == (TYPE_DATA, b"HelloFrame")
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("timeout waiting for frame")
     finally:
         tun_a.close()
         tun_b.close()
@@ -65,10 +85,45 @@ def test_tunnel_bidirectional():
     tun_a.open()
     tun_b.open()
     try:
-        tun_a.send(b"request")
-        tun_b.send(b"response")
-        assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"request")
-        assert tun_a.recv(timeout=3) == (TYPE_DATA, 0, b"response")
+        q_a = tun_a.register(0)
+        q_b = tun_b.register(0)
+        tun_a.send(0, b"request")
+        tun_b.send(0, b"response")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if q_b and q_a:
+                assert q_b.popleft() == (TYPE_DATA, b"request")
+                assert q_a.popleft() == (TYPE_DATA, b"response")
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("timeout waiting for frames")
+    finally:
+        tun_a.close()
+        tun_b.close()
+
+
+def test_tunnel_multi_sid():
+    from tunnel.tunnel import Tunnel
+    from tunnel.frame import TYPE_DATA
+    phy_a, phy_b = make_pair()
+    tun_a, tun_b = Tunnel(phy_a), Tunnel(phy_b)
+    tun_a.open()
+    tun_b.open()
+    try:
+        q1 = tun_b.register(1)
+        q2 = tun_b.register(2)
+        tun_a.send(1, b"sid1")
+        tun_a.send(2, b"sid2")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if q1 and q2:
+                assert q1.popleft() == (TYPE_DATA, b"sid1")
+                assert q2.popleft() == (TYPE_DATA, b"sid2")
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("timeout waiting for frames")
     finally:
         tun_a.close()
         tun_b.close()
@@ -107,16 +162,21 @@ def test_tunnel_listen_and_target():
 
     threading.Thread(target=echo_handler, daemon=True).start()
 
-    listen_port = 18080
+    listen_srv = socket.socket()
+    listen_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen_srv.bind(("127.0.0.1", 0))
+    listen_port = listen_srv.getsockname()[1]
+    listen_srv.close()
+
     threading.Thread(target=run_listen, args=(tun_listen, listen_port), daemon=True).start()
     threading.Thread(target=run_target, args=(tun_target, f"127.0.0.1:{echo_port}"), daemon=True).start()
-    time.sleep(1)
+    time.sleep(2)
 
     try:
         s = socket.create_connection(("127.0.0.1", listen_port), timeout=5)
         s.settimeout(5)
         s.sendall(b"tunnel_test")
-        time.sleep(1)
+        time.sleep(3)
         data = s.recv(4096)
         assert data == b"tunnel_test"
         assert b"tunnel_test" in echo_data
@@ -129,30 +189,46 @@ def test_tunnel_listen_and_target():
 
 def test_tunnel_target_reconnect():
     from tunnel.tunnel import Tunnel
-    from tunnel.cli import run_target
+    from tunnel.frame import TYPE_OPEN, TYPE_DATA
 
     phy_a, phy_b = make_pair()
-    tun, tun_b = Tunnel(phy_a), Tunnel(phy_b)
-    tun.open()
+    tun_a, tun_b = Tunnel(phy_a), Tunnel(phy_b)
+    tun_a.open()
     tun_b.open()
-
-    target_port = 18090
-    threading.Thread(target=run_target, args=(tun, f"127.0.0.1:{target_port}"), daemon=True).start()
-    time.sleep(1)
 
     target_srv = socket.socket()
     target_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    target_srv.bind(("127.0.0.1", target_port))
+    target_srv.bind(("127.0.0.1", 0))
+    target_port = target_srv.getsockname()[1]
     target_srv.listen(1)
-    target_srv.settimeout(5)
+    target_srv.settimeout(10)
+
+    def run_target_thread():
+        from tunnel.cli import run_target
+        run_target(tun_b, f"127.0.0.1:{target_port}")
+
+    threading.Thread(target=run_target_thread, daemon=True).start()
+    time.sleep(2)
+
+    # register queue BEFORE sending OPEN to avoid race
+    q = tun_a.register(0)
+    tun_a.send_frame(TYPE_OPEN, 0)
+    time.sleep(2)
 
     try:
         c, _ = target_srv.accept()
         c.settimeout(3)
         c.sendall(b"reconnect_ok")
         time.sleep(0.5)
-        from tunnel.frame import TYPE_DATA
-        assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"reconnect_ok")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if q:
+                assert q.popleft() == (TYPE_DATA, b"reconnect_ok")
+                break
+            time.sleep(0.001)
+        else:
+            pytest.fail("timeout")
+        tun_a.unregister(0)
         c.close()
     finally:
         phy_a.close()

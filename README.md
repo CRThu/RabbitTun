@@ -39,10 +39,8 @@ uv run python -m nuitka --standalone --output-filename=rabbit-tun.exe run.py
 rabbit-tun <phy> [选项]
 
 phy         COM3, COM3:9600, tcp:host:port
--l PORT     监听 TCP，桥接到 PHY（单会话）
--t TARGET   连接 PHY 到 TCP 目标（单会话）
--L PORT     监听 TCP，多路复用桥接到 PHY（多会话并发）
--T TARGET   连接 PHY 到 TCP 目标（多路复用）
+-l PORT     监听 TCP，桥接到 PHY
+-t TARGET   连接 PHY 到 TCP 目标 (host:port)
 ```
 
 ## 场景

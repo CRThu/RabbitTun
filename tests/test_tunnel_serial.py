@@ -18,6 +18,19 @@ def find_serial_pair():
     pytest.skip("No serial pair found")
 
 
+def _read_one(tun, sid, timeout=3):
+    q = tun.register(sid)
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if q:
+                return q.popleft()
+            time.sleep(0.001)
+        return None
+    finally:
+        tun.unregister(sid)
+
+
 @pytest.fixture
 def serial_pair():
     port_a, port_b = find_serial_pair()
@@ -35,18 +48,18 @@ def serial_pair():
 def test_tunnel_frame_serial(serial_pair):
     from tunnel.frame import TYPE_DATA
     tun_a, tun_b = serial_pair
-    tun_a.send(b"HelloSerial")
-    assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"HelloSerial")
+    tun_a.send(0, b"HelloSerial")
+    assert _read_one(tun_b, 0) == (TYPE_DATA, b"HelloSerial")
 
 
 def test_tunnel_bidirectional_serial(serial_pair):
     from tunnel.frame import TYPE_DATA
     tun_a, tun_b = serial_pair
-    tun_a.send(b"request")
+    tun_a.send(0, b"request")
     time.sleep(0.1)
-    tun_b.send(b"response")
-    assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"request")
-    assert tun_a.recv(timeout=3) == (TYPE_DATA, 0, b"response")
+    tun_b.send(0, b"response")
+    assert _read_one(tun_b, 0) == (TYPE_DATA, b"request")
+    assert _read_one(tun_a, 0) == (TYPE_DATA, b"response")
 
 
 def test_tunnel_listen_and_target_serial(serial_pair):
