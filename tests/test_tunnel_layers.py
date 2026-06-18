@@ -43,13 +43,15 @@ def make_pair():
 
 def test_tunnel_frame():
     from tunnel.tunnel import Tunnel
+    from tunnel.frame import TYPE_DATA
     phy_a, phy_b = make_pair()
     tun_a, tun_b = Tunnel(phy_a), Tunnel(phy_b)
     tun_a.open()
     tun_b.open()
     try:
         tun_a.send(b"HelloFrame")
-        assert tun_b.recv(timeout=3) == b"HelloFrame"
+        frame = tun_b.recv(timeout=3)
+        assert frame == (TYPE_DATA, 0, b"HelloFrame")
     finally:
         tun_a.close()
         tun_b.close()
@@ -57,6 +59,7 @@ def test_tunnel_frame():
 
 def test_tunnel_bidirectional():
     from tunnel.tunnel import Tunnel
+    from tunnel.frame import TYPE_DATA
     phy_a, phy_b = make_pair()
     tun_a, tun_b = Tunnel(phy_a), Tunnel(phy_b)
     tun_a.open()
@@ -64,8 +67,8 @@ def test_tunnel_bidirectional():
     try:
         tun_a.send(b"request")
         tun_b.send(b"response")
-        assert tun_b.recv(timeout=3) == b"request"
-        assert tun_a.recv(timeout=3) == b"response"
+        assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"request")
+        assert tun_a.recv(timeout=3) == (TYPE_DATA, 0, b"response")
     finally:
         tun_a.close()
         tun_b.close()
@@ -148,7 +151,8 @@ def test_tunnel_target_reconnect():
         c.settimeout(3)
         c.sendall(b"reconnect_ok")
         time.sleep(0.5)
-        assert tun_b.recv(timeout=3) == b"reconnect_ok"
+        from tunnel.frame import TYPE_DATA
+        assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"reconnect_ok")
         c.close()
     finally:
         phy_a.close()

@@ -33,18 +33,20 @@ def serial_pair():
 
 
 def test_tunnel_frame_serial(serial_pair):
+    from tunnel.frame import TYPE_DATA
     tun_a, tun_b = serial_pair
     tun_a.send(b"HelloSerial")
-    assert tun_b.recv(timeout=3) == b"HelloSerial"
+    assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"HelloSerial")
 
 
 def test_tunnel_bidirectional_serial(serial_pair):
+    from tunnel.frame import TYPE_DATA
     tun_a, tun_b = serial_pair
     tun_a.send(b"request")
     time.sleep(0.1)
     tun_b.send(b"response")
-    assert tun_b.recv(timeout=3) == b"request"
-    assert tun_a.recv(timeout=3) == b"response"
+    assert tun_b.recv(timeout=3) == (TYPE_DATA, 0, b"request")
+    assert tun_a.recv(timeout=3) == (TYPE_DATA, 0, b"response")
 
 
 def test_tunnel_listen_and_target_serial(serial_pair):

@@ -19,6 +19,7 @@
 ## Features
 
 - TCP 字节流透传，支持任意协议（SSH、HTTP、SOCKS 等）
+- 多路复用 — 多个 TCP 连接并发共享同一串口链路
 - PHY 层可插拔 — 串口、ESP、TCP、BLE 均可，实现 `Phy` 接口即可
 - 帧同步 + CRC16-MODBUS 校验，数据可靠
 - 自动重连，断线恢复
@@ -37,9 +38,11 @@ uv run python -m nuitka --standalone --output-filename=rabbit-tun.exe run.py
 ```
 rabbit-tun <phy> [选项]
 
-phy       COM3, COM3:9600, tcp:host:port
--l PORT   监听 TCP 端口，桥接到 PHY
--t TARGET 连接 PHY 到 TCP 目标 (host:port)
+phy         COM3, COM3:9600, tcp:host:port
+-l PORT     监听 TCP，桥接到 PHY（单会话）
+-t TARGET   连接 PHY 到 TCP 目标（单会话）
+-L PORT     监听 TCP，多路复用桥接到 PHY（多会话并发）
+-T TARGET   连接 PHY 到 TCP 目标（多路复用）
 ```
 
 ## 场景
@@ -122,14 +125,16 @@ $env:https_proxy="http://127.0.0.1:9000"
 
 ## 协议
 
-TCP 字节流透传，不解析上层协议。
+TCP 字节流透传，不解析上层协议。多路复用模式下帧头包含 TYPE 和 SESSION ID。
 
 ```
-+--------+--------+-------------+--------+--------+
-|  HEAD  |  LEN   |    DATA     |  CRC   |  TAIL  |
-| 1 B    | 2 B    |  max 4 KB   | 2 B    | 1 B    |
-+--------+--------+-------------+--------+--------+
-  0x7E     n        payload     CRC16    0x7F
++--------+--------+------+--------+-------------+--------+--------+
+|  HEAD  |  LEN   | TYPE |  SID   |    DATA     |  CRC   |  TAIL  |
+| 1 B    | 2 B    | 1 B  | 1 B    |  max 4 KB   | 2 B    | 1 B    |
++--------+--------+------+--------+-------------+--------+--------+
+  0x7E     n       CMD    SID      payload      CRC16    0x7F
+
+TYPE: DATA=0x00, OPEN=0x01, CLOSE=0x02
 ```
 
 ## PHY 层

@@ -350,7 +350,7 @@ def test_tunnel():
 
 
 def test_frame():
-    from tunnel.frame import encode, Decoder
+    from tunnel.frame import encode, Decoder, TYPE_DATA
 
     print('=== Frame encode/decode ===')
     payload = bytes(1024)
@@ -377,9 +377,100 @@ def test_frame():
         size = random.randint(1, 4096)
         data = bytes(random.getrandbits(8) for _ in range(size))
         frames = dec2.feed(encode(data))
-        if not frames or frames[0] != data:
+        if not frames or frames[0] != (TYPE_DATA, 0, data):
             errors += 1
     print(f"  integrity: 1000 random frames, {errors} errors")
+
+
+def test_mux():
+    from tunnel.phy import SerialPhy
+    from tunnel.tunnel import MuxTunnel
+    from tunnel.cli import run_mux_listen, run_mux_target
+
+    echo_port = find_free_port()
+    tunnel_port = find_free_port()
+
+    threading.Thread(target=echo_server, args=(echo_port,), daemon=True).start()
+
+    phy3 = SerialPhy('COM3')
+    mux3 = MuxTunnel(phy3)
+    mux3.open()
+    threading.Thread(target=run_mux_target, args=(mux3, f'127.0.0.1:{echo_port}'), daemon=True).start()
+
+    phy18 = SerialPhy('COM18')
+    mux18 = MuxTunnel(phy18)
+    mux18.open()
+    threading.Thread(target=run_mux_listen, args=(mux18, tunnel_port), daemon=True).start()
+
+    time.sleep(2)
+
+    print('=== Mux Tunnel (COM3 <-> COM18) ===')
+
+    # single session baseline
+    print('\n  [single session]')
+    sock = socket.create_connection(('127.0.0.1', tunnel_port), timeout=10)
+    total = 30 * 1024
+    sent = 0
+    recv_buf = b''
+    t0 = time.perf_counter()
+    while sent < total:
+        sock.sendall(os.urandom(1024))
+        sent += 1024
+    while len(recv_buf) < sent:
+        data = sock.recv(min(65536, sent - len(recv_buf)))
+        if not data:
+            break
+        recv_buf += data
+    elapsed = time.perf_counter() - t0
+    print(f"    {len(recv_buf)/elapsed/1024:.1f}KB/s sent={sent//1024}KB recv={len(recv_buf)//1024}KB")
+    sock.close()
+    time.sleep(3)
+
+    # 4 concurrent sessions
+    N = 4
+    PER = 20 * 1024
+    results = [None] * N
+    barrier = threading.Barrier(N)
+
+    def worker(idx):
+        try:
+            barrier.wait()
+            s = socket.create_connection(('127.0.0.1', tunnel_port), timeout=10)
+            pkt = bytes([idx]) * 1024
+            sent = 0
+            recv_buf = b''
+            t0 = time.perf_counter()
+            while sent < PER:
+                s.sendall(pkt)
+                sent += 1024
+            while len(recv_buf) < sent:
+                chunk = s.recv(min(65536, sent - len(recv_buf)))
+                if not chunk:
+                    break
+                recv_buf += chunk
+            elapsed = time.perf_counter() - t0
+            ok = len(recv_buf) == sent and all(b == idx for b in recv_buf)
+            results[idx] = (len(recv_buf)/elapsed/1024, ok)
+            s.close()
+        except Exception as e:
+            results[idx] = (0, str(e))
+
+    print(f'\n  [{N} concurrent sessions]')
+    threads = [threading.Thread(target=worker, args=(i,), daemon=True) for i in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    for i, r in enumerate(results):
+        if r is None:
+            print(f"    session {i}: timeout")
+        elif isinstance(r[1], str):
+            print(f"    session {i}: error: {r[1]}")
+        else:
+            print(f"    session {i}: {r[0]:.1f}KB/s integrity={'ok' if r[1] else 'FAIL'}")
+
+    mux3.close()
+    mux18.close()
 
 
 # ── main ─────────────────────────────────────────────────
@@ -392,5 +483,7 @@ if __name__ == '__main__':
         test_tunnel()
     elif mode == 'frame':
         test_frame()
+    elif mode == 'mux':
+        test_mux()
     else:
-        print('usage: python bench.py [loop|tunnel|frame]')
+        print('usage: python bench.py [loop|tunnel|frame|mux]')
